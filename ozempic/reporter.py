@@ -56,12 +56,15 @@ def _calculate_total_size(results: list[dict]) -> str:
             except ValueError:
                 pass
 
+    size_part = ""
     if has_size_units and total_gb > 0:
-        if total_gb >= 1:
-            return f"{total_gb:.1f} GB"
-        else:
-            return f"{int(total_gb * 1024)} MB"
-    elif total_files > 0:
+        size_part = f"{total_gb:.1f} GB" if total_gb >= 1 else f"{int(total_gb * 1024)} MB"
+
+    if size_part and total_files > 0:
+        return f"{size_part} and {total_files} files"
+    if size_part:
+        return size_part
+    if total_files > 0:
         return f"{total_files} files"
     return "0 B"
 
