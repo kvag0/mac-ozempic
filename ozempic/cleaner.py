@@ -166,7 +166,11 @@ def _clean_electron_sub_caches() -> list[dict]:
             continue
         if "CloudKit" in str(app_dir):
             continue
-        for sub in app_dir.iterdir():
+        try:
+            subdirs = list(app_dir.iterdir())
+        except PermissionError:
+            continue
+        for sub in subdirs:
             if not sub.is_dir():
                 continue
             if sub.name not in target_names:
