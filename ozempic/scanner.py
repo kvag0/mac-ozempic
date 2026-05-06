@@ -190,7 +190,7 @@ def scan_location_anomalies() -> list[dict]:
 # Layer 2: Extension mismatches
 # ---------------------------------------------------------------------------
 
-def _scan_2a_doc_image_with_exec_bit() -> list[dict]:
+def _scan_2a_doc_image_with_exec_bit() -> tuple[list[dict], set]:
     """2a. Document/image files with executable bit in Downloads/Desktop/Documents."""
     results = []
     flagged_paths = set()
