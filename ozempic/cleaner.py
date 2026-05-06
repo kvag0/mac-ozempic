@@ -8,6 +8,7 @@ import plistlib
 import shutil
 import sqlite3
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -25,7 +26,7 @@ def check_fda() -> bool:
     """
     tcc_db = Path("/Library/Application Support/com.apple.TCC/TCC.db")
     try:
-        con = sqlite3.connect(str(tcc_db))
+        con = sqlite3.connect(f"file:{tcc_db}?mode=ro", uri=True)
         con.execute(
             "SELECT client FROM access WHERE service = 'kTCCServiceSystemPolicyAllFiles'"
         ).fetchall()
@@ -231,15 +232,17 @@ def _clean_ds_store() -> dict | None:
 
 
 def _run_quicklook_cache() -> dict:
-    subprocess.run(["qlmanage", "-r", "cache"], capture_output=True, timeout=30)
-    return {"label": "QuickLook cache", "size_str": "cleared", "action": None}
+    result = subprocess.run(["qlmanage", "-r", "cache"], capture_output=True, timeout=30)
+    size_str = "cleared" if result.returncode == 0 else "reset attempted (error)"
+    return {"label": "QuickLook cache", "size_str": size_str, "action": None}
 
 
 def _run_font_cache() -> dict:
-    subprocess.run(
+    result = subprocess.run(
         ["atsutil", "databases", "-removeUser"], capture_output=True, timeout=30
     )
-    return {"label": "Font cache", "size_str": "cleared", "action": None}
+    size_str = "cleared" if result.returncode == 0 else "reset attempted (error)"
+    return {"label": "Font cache", "size_str": size_str, "action": None}
 
 
 # ---------------------------------------------------------------------------
@@ -381,20 +384,29 @@ def get_review_items() -> list[dict]:
 def delete_ios_backup(backup_id: str) -> bool:
     """
     Find the backup directory whose UUID starts with *backup_id* and delete it.
-    Returns True on success, False if not found.
+    Returns True on success, False if not found or if multiple matches exist.
     """
     backup_root = Path("~/Library/Application Support/MobileSync/Backup").expanduser()
     if not backup_root.is_dir():
         return False
 
+    matches = []
     for backup_dir in backup_root.iterdir():
         if not backup_dir.is_dir():
             continue
         if backup_dir.name.startswith(backup_id):
-            try:
-                shutil.rmtree(backup_dir)
-                return True
-            except OSError:
-                return False
+            matches.append(backup_dir)
 
-    return False
+    if len(matches) == 0:
+        return False
+    elif len(matches) == 1:
+        try:
+            shutil.rmtree(matches[0])
+            return True
+        except OSError:
+            return False
+    else:
+        # Ambiguous: multiple matches
+        uuids = ", ".join(m.name for m in matches)
+        print(f"Error: Backup ID '{backup_id}' is ambiguous. Matches: {uuids}", file=sys.stderr)
+        return False
