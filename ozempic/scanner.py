@@ -58,7 +58,7 @@ KNOWN_HIDDEN = {
     ".deno", ".pnpm", ".bun", ".terraform.d", ".aws", ".gcloud",
     ".azure", ".m2", ".ivy2", ".sbt", ".lein", ".boot",
     ".venv", ".virtualenvs", ".poetry", ".rvm",
-    ".gem", ".bundle", ".rbenv",
+    ".gem", ".bundle",
     ".node_repl_history", ".python_history",
     ".mysql_history", ".psql_history", ".rediscli_history",
     ".gitmodules", ".editorconfig", ".npmrc", ".yarnrc",

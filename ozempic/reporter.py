@@ -38,6 +38,18 @@ def _calculate_total_size(results: list[dict]) -> str:
                 has_size_units = True
             except ValueError:
                 pass
+        elif "KB" in size_str:
+            try:
+                total_gb += float(size_str.replace(" KB", "")) / (1024 * 1024)
+                has_size_units = True
+            except ValueError:
+                pass
+        elif size_str.endswith(" B") and not size_str.endswith("GB") and not size_str.endswith("KB") and not size_str.endswith("MB"):
+            try:
+                total_gb += float(size_str.replace(" B", "")) / (1024 ** 3)
+                has_size_units = True
+            except ValueError:
+                pass
         elif "files" in size_str:
             try:
                 total_files += int(size_str.replace(" files", ""))

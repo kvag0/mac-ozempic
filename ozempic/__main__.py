@@ -36,7 +36,10 @@ def parse_args():
         metavar="ID",
         help="Delete iOS backup by UUID prefix"
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.scan_only and args.clean_only:
+        parser.error("--scan and --clean are mutually exclusive")
+    return args
 
 
 def main():
