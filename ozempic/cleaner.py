@@ -32,7 +32,7 @@ def check_fda() -> bool:
         ).fetchall()
         con.close()
         return True
-    except sqlite3.OperationalError:
+    except sqlite3.Error:
         return False
 
 
