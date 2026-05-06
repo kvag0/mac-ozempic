@@ -16,7 +16,7 @@ from ozempic.cleaner import format_size
 
 HOME = Path.home()
 
-_INSTALLER_EXTS = {".dmg", ".pkg", ".zip", ".tar", ".gz", ".app"}
+_INSTALLER_EXTS = {".dmg", ".pkg", ".zip", ".tar", ".gz", ".tgz", ".app"}
 
 _SCRIPT_EXTS = {".sh", ".py", ".rb", ".pl", ".zsh", ".bash"}
 
@@ -30,6 +30,19 @@ _SKIP_PREFIXES = [
     str(HOME / ".config") + os.sep,
     str(HOME / ".local") + os.sep,
     str(HOME / "Library") + os.sep,
+    str(HOME / "Desktop") + os.sep,
+    str(HOME / "Downloads") + os.sep,
+    str(HOME / "Documents") + os.sep,
+    str(HOME / "Movies") + os.sep,
+    str(HOME / "Music") + os.sep,
+    str(HOME / "Pictures") + os.sep,
+    str(HOME / "Projects") + os.sep,
+    str(HOME / "Developer") + os.sep,
+    str(HOME / "src") + os.sep,
+    str(HOME / "code") + os.sep,
+    str(HOME / "repos") + os.sep,
+    str(HOME / "workspace") + os.sep,
+    str(HOME / "dev") + os.sep,
     "/usr/local/",
     "/opt/homebrew/",
 ]
@@ -41,6 +54,15 @@ KNOWN_HIDDEN = {
     ".pyenv", ".nvm", ".rbenv", ".oh-my-zsh", ".vscode", ".DS_Store",
     ".Trash", ".claude", ".zsh_sessions", ".zsh_history",
     ".CFUserTextEncoding", ".lesshst",
+    ".docker", ".gradle", ".android", ".kube", ".asdf", ".volta",
+    ".deno", ".pnpm", ".bun", ".terraform.d", ".aws", ".gcloud",
+    ".azure", ".m2", ".ivy2", ".sbt", ".lein", ".boot",
+    ".venv", ".virtualenvs", ".poetry", ".rvm",
+    ".gem", ".bundle", ".rbenv",
+    ".node_repl_history", ".python_history",
+    ".mysql_history", ".psql_history", ".rediscli_history",
+    ".gitmodules", ".editorconfig", ".npmrc", ".yarnrc",
+    ".tool-versions",
 }
 
 _DOC_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".pdf", ".docx", ".xlsx", ".pptx", ".txt"}
@@ -133,13 +155,15 @@ def _scan_1b_scripts_in_unexpected_places() -> list[dict]:
 
             for filename in filenames:
                 path = dirpath / filename
-                if path.is_symlink():
+                try:
+                    if path.is_symlink():
+                        continue
+                    suffix = path.suffix.lower()
+                    if suffix not in _SCRIPT_EXTS:
+                        continue
+                except (PermissionError, OSError):
                     continue
-                if path.suffix.lower() in _SCRIPT_EXTS:
-                    try:
-                        results.append(_make_result(path, "script file in unexpected location"))
-                    except PermissionError:
-                        pass
+                results.append(_make_result(path, "script file in unexpected location"))
     except PermissionError:
         pass
     return results
