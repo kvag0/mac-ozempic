@@ -9,7 +9,6 @@ YELLOW = "\033[93m"
 RED = "\033[91m"
 BOLD = "\033[1m"
 RESET = "\033[0m"
-DIM = "\033[2m"
 
 
 def _calculate_total_size(results: list[dict]) -> str:
@@ -107,7 +106,7 @@ def print_cleaned(results: list[dict]) -> None:
     print(header)
 
     if not results:
-        print(f"  (nothing found)")
+        print("  (nothing found)")
         print()
         return
 
@@ -135,12 +134,12 @@ def print_review(results: list[dict]) -> None:
         ⚠ iOS backup           12 GB   →  "Caio's iPhone" (2026-04-01)
                                           run: ozempic --delete-backup <id>
     """
-    header, header_width = _format_header("REVIEW", YELLOW)
+    header, _ = _format_header("REVIEW", YELLOW)
     print()
     print(header)
 
     if not results:
-        print(f"  (nothing found)")
+        print("  (nothing found)")
         print()
         return
 
@@ -154,9 +153,12 @@ def print_review(results: list[dict]) -> None:
         # Print remaining lines of multi-line actions
         if action and "\n" in action:
             lines = action.split("\n")
+            # Calculate indent: 2 spaces + 1 char symbol + 1 space + padded label + 2 spaces + size_str + "  →  "
+            # The first_line without color codes: "  ⚠ " + label + "  " + size_str + "  →  "
+            prefix_width = 2 + 1 + 1 + len(label) + 2 + len(size_str) + 5  # 5 for "  →  "
+            indent = " " * prefix_width
             for line in lines[1:]:
-                # Indent continuation lines to align with the first line of action
-                print(f"      {' ' * (len(label) + 4)}{line}")
+                print(f"{indent}{line}")
 
     print()
 
@@ -169,12 +171,12 @@ def print_suspicious(results: list[dict]) -> None:
         ✗ ~/Downloads/setup.sh  executable script in Downloads
         ✗ ~/Desktop/photo.jpg   has executable bit set
     """
-    header, header_width = _format_header("SUSPICIOUS", RED)
+    header, _ = _format_header("SUSPICIOUS", RED)
     print()
     print(header)
 
     if not results:
-        print(f"  (nothing found)")
+        print("  (nothing found)")
         print()
         return
 
