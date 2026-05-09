@@ -114,39 +114,45 @@ def _delete_path(path: Path) -> None:
 # Individual cleaning targets
 # ---------------------------------------------------------------------------
 
-def _clean_dir_contents(label: str, path: Path) -> dict | None:
+def _clean_dir_contents(label: str, path: Path, dry_run: bool = False) -> dict | None:
     """
-    Measure *path*, delete its contents, return a result dict.
+    Measure *path*, delete its contents (if not dry_run), return a result dict.
     Returns None if path does not exist.
     """
     path = path.expanduser()
     if not path.exists():
         return None
     size = get_size(path)
-    try:
-        _delete_dir_contents(path)
-    except PermissionError:
+    if size == 0:
         return None
+    if not dry_run:
+        try:
+            _delete_dir_contents(path)
+        except PermissionError:
+            return None
     return {"label": label, "size_str": format_size(size), "action": None}
 
 
-def _clean_path(label: str, path: Path) -> dict | None:
+def _clean_path(label: str, path: Path, dry_run: bool = False) -> dict | None:
     """
-    Measure *path*, delete it entirely, return a result dict.
+    Measure *path*, delete it entirely (if not dry_run), return a result dict.
     Returns None if path does not exist.
     """
     path = path.expanduser()
     if not path.exists():
         return None
     size = get_size(path)
-    try:
-        _delete_path(path)
-    except PermissionError:
+    if size == 0:
         return None
+    if not dry_run:
+        try:
+            _delete_path(path)
+        except PermissionError:
+            return None
     return {"label": label, "size_str": format_size(size), "action": None}
 
 
-def _clean_electron_sub_caches() -> list[dict]:
+def _clean_electron_sub_caches(dry_run: bool = False) -> list[dict]:
     """
     Walk ~/Library/Application Support/. For each app subdirectory look for
     GPUCache, Code Cache, or CachedData subdirectories and clean their contents.
@@ -180,12 +186,13 @@ def _clean_electron_sub_caches() -> list[dict]:
             size = get_size(sub)
             if size == 0:
                 continue
-            try:
-                _delete_dir_contents(sub)
-            except PermissionError:
-                continue
+            if not dry_run:
+                try:
+                    _delete_dir_contents(sub)
+                except PermissionError:
+                    continue
             results.append({
-                "label": f"Electron cache ({app_dir.name}/{sub.name})",
+                "label": f"{app_dir.name} ({sub.name})",
                 "size_str": format_size(size),
                 "action": None,
             })
@@ -193,8 +200,8 @@ def _clean_electron_sub_caches() -> list[dict]:
     return results
 
 
-def _clean_mail_downloads() -> dict | None:
-    """Find Mail Downloads directories and delete their contents."""
+def _clean_mail_downloads(dry_run: bool = False) -> dict | None:
+    """Find Mail Downloads directories and delete their contents (if not dry_run)."""
     base = Path("~/Library/Containers/com.apple.mail").expanduser()
     if not base.exists():
         return None
@@ -206,15 +213,16 @@ def _clean_mail_downloads() -> dict | None:
             continue
         found = True
         total_size += get_size(mail_dl)
-        _delete_dir_contents(mail_dl)
+        if not dry_run:
+            _delete_dir_contents(mail_dl)
 
-    if not found:
+    if not found or total_size == 0:
         return None
     return {"label": "Mail Downloads", "size_str": format_size(total_size), "action": None}
 
 
-def _clean_ds_store() -> dict | None:
-    """Find and delete all .DS_Store files under ~. Return file count."""
+def _clean_ds_store(dry_run: bool = False) -> dict | None:
+    """Find and delete all .DS_Store files under ~. Return file count (if not dry_run)."""
     home = Path.home()
     count = 0
     for dirpath, dirnames, filenames in os.walk(home, followlinks=False):
@@ -225,11 +233,12 @@ def _clean_ds_store() -> dict | None:
         ]
         for fname in filenames:
             if fname == ".DS_Store":
-                try:
-                    Path(dirpath, fname).unlink()
-                    count += 1
-                except (PermissionError, OSError):
-                    pass
+                count += 1
+                if not dry_run:
+                    try:
+                        Path(dirpath, fname).unlink()
+                    except (PermissionError, OSError):
+                        pass
     if count == 0:
         return None
     return {"label": ".DS_Store files", "size_str": f"{count} files", "action": None}
@@ -253,7 +262,7 @@ def _run_font_cache() -> dict:
 # Public API
 # ---------------------------------------------------------------------------
 
-def clean_all(keep_logs: bool = False) -> list[dict]:
+def clean_all(keep_logs: bool = False, dry_run: bool = False) -> list[dict]:
     """
     Run all auto-delete targets.  Returns a list of result dicts compatible
     with reporter.py (only non-None / non-zero results are included).
@@ -265,72 +274,86 @@ def clean_all(keep_logs: bool = False) -> list[dict]:
             results.append(item)
 
     # User caches (delete contents, keep folder)
-    _add(_clean_dir_contents("User caches", Path("~/Library/Caches")))
+    _add(_clean_dir_contents("User caches", Path("~/Library/Caches"), dry_run))
 
     # System caches (may need sudo — skip on PermissionError)
     sys_caches = Path("/Library/Caches")
     if sys_caches.exists():
         size = get_size(sys_caches)
-        try:
-            _delete_dir_contents(sys_caches)
-            results.append({"label": "System caches", "size_str": format_size(size), "action": None})
-        except PermissionError:
-            pass
+        if size > 0:
+            if not dry_run:
+                try:
+                    _delete_dir_contents(sys_caches)
+                    results.append({"label": "System caches", "size_str": format_size(size), "action": None})
+                except PermissionError:
+                    pass
+            else:
+                results.append({"label": "System caches", "size_str": format_size(size), "action": None})
 
     # Logs
     if not keep_logs:
-        _add(_clean_dir_contents("User logs", Path("~/Library/Logs")))
+        _add(_clean_dir_contents("User logs", Path("~/Library/Logs"), dry_run))
         sys_logs = Path("/Library/Logs")
         if sys_logs.exists():
             size = get_size(sys_logs)
-            try:
-                _delete_dir_contents(sys_logs)
-                results.append({"label": "System logs", "size_str": format_size(size), "action": None})
-            except PermissionError:
-                pass
+            if size > 0:
+                if not dry_run:
+                    try:
+                        _delete_dir_contents(sys_logs)
+                        results.append({"label": "System logs", "size_str": format_size(size), "action": None})
+                    except PermissionError:
+                        pass
+                else:
+                    results.append({"label": "System logs", "size_str": format_size(size), "action": None})
 
     # Xcode derived data
     _add(_clean_dir_contents(
         "Xcode derived data",
         Path("~/Library/Developer/Xcode/DerivedData"),
+        dry_run,
     ))
 
     # npm cache
-    _add(_clean_path("npm cache", Path("~/.npm/_cacache")))
+    _add(_clean_path("npm cache", Path("~/.npm/_cacache"), dry_run))
 
     # pip cache
-    _add(_clean_path("pip cache", Path("~/Library/Caches/pip")))
+    _add(_clean_path("pip cache", Path("~/Library/Caches/pip"), dry_run))
 
     # Homebrew cache
-    _add(_clean_path("Homebrew cache", Path("~/Library/Caches/Homebrew")))
+    _add(_clean_path("Homebrew cache", Path("~/Library/Caches/Homebrew"), dry_run))
 
     # Electron sub-caches
-    results.extend(_clean_electron_sub_caches())
+    results.extend(_clean_electron_sub_caches(dry_run))
 
     # Mail Downloads
-    _add(_clean_mail_downloads())
+    _add(_clean_mail_downloads(dry_run))
 
-    # QuickLook cache
-    try:
-        results.append(_run_quicklook_cache())
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        pass
+    # Commands (QL and Fonts) - Skip in dry run or report as "to be cleared"
+    if not dry_run:
+        # QuickLook cache
+        try:
+            results.append(_run_quicklook_cache())
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
 
-    # Font cache
-    try:
-        results.append(_run_font_cache())
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        pass
+        # Font cache
+        try:
+            results.append(_run_font_cache())
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
+    else:
+        results.append({"label": "QuickLook cache", "size_str": "pending", "action": None})
+        results.append({"label": "Font cache", "size_str": "pending", "action": None})
 
     # .DS_Store files
-    _add(_clean_ds_store())
+    _add(_clean_ds_store(dry_run))
 
     return results
 
 
 def get_review_items() -> list[dict]:
     """
-    Return review items: Trash and iOS backups.
+    Return review items: Trash.
     Each item is a result dict compatible with reporter.py.
     """
     results: list[dict] = []
@@ -339,78 +362,13 @@ def get_review_items() -> list[dict]:
     trash = Path("~/.Trash").expanduser()
     if trash.exists():
         size = get_size(trash)
-        results.append({
-            "label": "Trash",
-            "size_str": format_size(size),
-            "action": "run: rm -rf ~/.Trash/*",
-        })
-
-    # iOS backups
-    backup_root = Path("~/Library/Application Support/MobileSync/Backup").expanduser()
-    if backup_root.is_dir():
-        for backup_dir in backup_root.iterdir():
-            if not backup_dir.is_dir():
-                continue
-            uuid = backup_dir.name
-            size = get_size(backup_dir)
-            size_str = format_size(size)
-
-            # Read Info.plist for device name and last backup date
-            plist_path = backup_dir / "Info.plist"
-            device_name = "Unknown device"
-            backup_date = "unknown date"
-            if plist_path.exists():
-                try:
-                    with open(plist_path, "rb") as f:
-                        info = plistlib.load(f)
-                    device_name = info.get("Device Name", device_name)
-                    last_date = info.get("Last Backup Date")
-                    if last_date is not None:
-                        # last_date is a datetime object when parsed by plistlib
-                        backup_date = last_date.strftime("%Y-%m-%d")
-                except Exception:
-                    pass
-
-            short_id = uuid[:8]
-            action = (
-                f'"{device_name}" ({backup_date})\n'
-                f"  run: ozempic --delete-backup {short_id}"
-            )
+        if size > 0:
             results.append({
-                "label": "iOS backup",
-                "size_str": size_str,
-                "action": action,
+                "label": "Trash",
+                "size_str": format_size(size),
+                "action": "run: rm -rf ~/.Trash/*",
             })
 
     return results
 
 
-def delete_ios_backup(backup_id: str) -> bool:
-    """
-    Find the backup directory whose UUID starts with *backup_id* and delete it.
-    Returns True on success, False if not found or if multiple matches exist.
-    """
-    backup_root = Path("~/Library/Application Support/MobileSync/Backup").expanduser()
-    if not backup_root.is_dir():
-        return False
-
-    matches = []
-    for backup_dir in backup_root.iterdir():
-        if not backup_dir.is_dir():
-            continue
-        if backup_dir.name.startswith(backup_id):
-            matches.append(backup_dir)
-
-    if len(matches) == 0:
-        return False
-    elif len(matches) == 1:
-        try:
-            shutil.rmtree(matches[0])
-            return True
-        except OSError:
-            return False
-    else:
-        # Ambiguous: multiple matches
-        uuids = ", ".join(m.name for m in matches)
-        print(f"Error: Backup ID '{backup_id}' is ambiguous. Matches: {uuids}", file=sys.stderr)
-        return False

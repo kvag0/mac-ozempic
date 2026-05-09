@@ -5,79 +5,63 @@ Stdlib only — no external dependencies.
 
 import sys
 import argparse
-from ozempic import cleaner, reporter, scanner
+from ozempic import cleaner, reporter
 
 
-def parse_args():
-    """Parse and return command-line arguments."""
+def main() -> None:
     parser = argparse.ArgumentParser(
         prog="ozempic",
-        description="macOS disk cleaner — auto-cleans cache/logs, surfaces suspicious files."
+        description="ozempic: A simple, safe macOS disk cleaner.",
     )
     parser.add_argument(
-        "--scan",
-        dest="scan_only",
-        action="store_true",
-        help="Scan only, no deletion"
+        "--keep-logs", action="store_true", help="Do not clean log directories"
     )
     parser.add_argument(
-        "--clean",
-        dest="clean_only",
-        action="store_true",
-        help="Clean only, skip anomaly scan"
-    )
-    parser.add_argument(
-        "--keep-logs",
-        action="store_true",
-        help="Exclude logs from auto-clean"
-    )
-    parser.add_argument(
-        "--delete-backup",
-        metavar="ID",
-        help="Delete iOS backup by UUID prefix"
+        "-y", "--yes", action="store_true", help="Skip confirmation prompt"
     )
     args = parser.parse_args()
-    if args.scan_only and args.clean_only:
-        parser.error("--scan and --clean are mutually exclusive")
-    return args
 
-
-def main():
-    """Main CLI orchestration logic."""
-    args = parse_args()
-
-    # Standalone mode: --delete-backup
-    if args.delete_backup:
-        success = cleaner.delete_ios_backup(args.delete_backup)
-        if success:
-            print(f"Backup {args.delete_backup} deleted.")
-        else:
-            print(f"Backup {args.delete_backup} not found.", file=sys.stderr)
-            sys.exit(1)
-        return
-
-    # FDA check (always runs unless --delete-backup)
+    # 1. FDA Check
     if not cleaner.check_fda():
         reporter.print_fda_error()
         sys.exit(1)
 
-    cleaned = []
-    review = []
-    suspicious = []
+    # 2. Analyze -> Prompt -> Clean
+    with reporter.Spinner("Analyzing safe-to-clean files"):
+        pending_cleaned = cleaner.clean_all(keep_logs=args.keep_logs, dry_run=True)
+        review_items = cleaner.get_review_items()
 
-    # Clean phase (unless --scan)
-    if not args.scan_only:
-        cleaned = cleaner.clean_all(keep_logs=args.keep_logs)
-        review = cleaner.get_review_items()
+    if not pending_cleaned and not review_items:
+        print("\nYour system is already lean! Nothing to clean.")
+        sys.exit(0)
 
-    # Scan phase (unless --clean)
-    if not args.clean_only:
-        suspicious = scanner.scan_all()
+    # Show what can be cleaned
+    if pending_cleaned:
+        reporter.print_cleaned(pending_cleaned)
+    
+    if review_items:
+        reporter.print_review(review_items)
 
-    # Print results
-    reporter.print_cleaned(cleaned)
-    reporter.print_review(review)
-    reporter.print_suspicious(suspicious)
+    # Confirmation
+    if not args.yes:
+        try:
+            choice = input("Proceed with cleaning the items listed above? (y/N): ").lower()
+            if choice != "y":
+                print("Cleaning cancelled.")
+                sys.exit(0)
+        except KeyboardInterrupt:
+            print("\nCleaning cancelled.")
+            sys.exit(0)
+
+    # Perform actual cleaning
+    with reporter.Spinner("Cleaning"):
+        actual_cleaned = cleaner.clean_all(keep_logs=args.keep_logs, dry_run=False)
+    
+    # Print final report
+    if actual_cleaned:
+        reporter.print_cleaned(actual_cleaned)
+    else:
+        print("Cleaning complete.")
 
 
 if __name__ == "__main__":

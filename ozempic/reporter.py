@@ -3,12 +3,17 @@ Reporter module for ozempic: ANSI-colored structured terminal output.
 No external dependencies — stdlib only.
 """
 
+import sys
+import threading
+import time
+
 # ANSI color codes
 GREEN = "\033[92m"
 YELLOW = "\033[93m"
 RED = "\033[91m"
 BOLD = "\033[1m"
 RESET = "\033[0m"
+CYAN = "\033[96m"
 
 
 def _calculate_total_size(results: list[dict]) -> str:
@@ -73,19 +78,31 @@ def _align_columns(results: list[dict]) -> list[tuple[str, str, str | None]]:
     """
     Align label and size_str columns to consistent width within a section.
     Returns list of (label, size_str, action) tuples with padded labels.
+    Caps label width to prevent extremely wide terminals.
     """
     if not results:
         return []
 
-    # Calculate max label width
-    max_label_width = max(len(r.get("label", "")) for r in results)
+    # Calculate max label width, capped at 60
+    max_label_width = 45
+    found_max = max(len(r.get("label", "")) for r in results)
+    actual_width = min(found_max, max_label_width)
 
     aligned = []
     for result in results:
         label = result.get("label", "")
         size_str = result.get("size_str", "")
         action = result.get("action")
-        padded_label = label.ljust(max_label_width)
+
+        # Truncate label in the middle if too long
+        if len(label) > max_label_width:
+            prefix = label[:20]
+            suffix = label[-22:]
+            display_label = f"{prefix}...{suffix}"
+        else:
+            display_label = label
+
+        padded_label = display_label.ljust(actual_width)
         aligned.append((padded_label, size_str, action))
 
     return aligned
@@ -178,29 +195,37 @@ def print_review(results: list[dict]) -> None:
     print()
 
 
-def print_suspicious(results: list[dict]) -> None:
-    """
-    Print the SUSPICIOUS section with red header and red X marks.
-    Format:
-      ━━━ SUSPICIOUS ━━━━━━━━━━━━━━━━━━━━━━
-        ✗ ~/Downloads/setup.sh  executable script in Downloads
-        ✗ ~/Desktop/photo.jpg   has executable bit set
-    """
-    header, _ = _format_header("SUSPICIOUS", RED)
-    print()
-    print(header)
+class Spinner:
+    """A simple threaded CLI spinner."""
+    def __init__(self, message: str = "Analyzing"):
+        self.message = message
+        self.frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        self._stop_event = threading.Event()
+        self._thread = None
 
-    if not results:
-        print("  (nothing found)")
-        print()
-        return
+    def _spin(self):
+        idx = 0
+        while not self._stop_event.is_set():
+            frame = self.frames[idx % len(self.frames)]
+            sys.stdout.write(f"\r  {CYAN}{frame}{RESET} {self.message}...")
+            sys.stdout.flush()
+            idx += 1
+            time.sleep(0.1)
+        # Clear the line on exit
+        sys.stdout.write("\r" + " " * (len(self.message) + 10) + "\r")
+        sys.stdout.flush()
 
-    aligned = _align_columns(results)
-    for label, size_str, _ in aligned:
-        # Suspicious items have label (path) and size_str (description)
-        print(f"  {RED}✗{RESET} {label}  {size_str}")
+    def __enter__(self):
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._spin)
+        self._thread.daemon = True
+        self._thread.start()
+        return self
 
-    print()
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join()
 
 
 def print_fda_error() -> None:
