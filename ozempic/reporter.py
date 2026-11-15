@@ -6,6 +6,7 @@ No external dependencies — stdlib only.
 import sys
 import threading
 import time
+import re
 
 # ANSI color codes
 GREEN = "\033[92m"
@@ -14,6 +15,80 @@ RED = "\033[91m"
 BOLD = "\033[1m"
 RESET = "\033[0m"
 CYAN = "\033[96m"
+BLUE = "\033[94m"
+MAGENTA = "\033[95m"
+
+# Emojis/icons for each cleanup category
+ICONS = {
+    "User caches": "📂",
+    "System caches": "⚙️",
+    "User logs": "📝",
+    "System logs": "📋",
+    "Xcode derived data": "🛠️",
+    "npm cache": "📦",
+    "pip cache": "🐍",
+    "Homebrew cache": "🍺",
+    "Mail Downloads": "✉️",
+    "QuickLook cache": "👁️",
+    "Font cache": "🔤",
+    ".DS_Store files": "🧹",
+    "Trash": "🗑️",
+    "iOS backup": "📱",
+}
+
+
+def get_icon(label: str) -> str:
+    """Return appropriate emoji icon for the given category label."""
+    # Check exact matches first
+    if label in ICONS:
+        return ICONS[label]
+    
+    # Check partial matches
+    for key, icon in ICONS.items():
+        if key in label:
+            return icon
+            
+    # Electron or generic apps
+    if "GPUCache" in label or "Code Cache" in label or "CachedData" in label:
+        return "⚛️"
+        
+    return "📄"
+
+
+def _visible_len(text: str) -> int:
+    """Calculate the visible character/cell width of text, ignoring ANSI escape sequences and accounting for emojis."""
+    clean_text = re.sub(r'\033\[[0-9;]*[a-zA-Z]', '', text)
+    val = len(clean_text)
+    # Add 1 for double-width emojis/indicators
+    emojis = "📂⚙️📝📋🛠️📦🐍🍺✉️👁️🔤🧹🗑️📱⚛️📄🟢🟡✨⚠️❌✓✗"
+    for char in clean_text:
+        if char in emojis:
+            val += 1
+    return val
+
+
+def print_logo() -> None:
+    """Print the colored gradient ASCII art banner for ozempic."""
+    logo_lines = [
+        "  ____                      _      ",
+        " / __ \\___ ___ __ _  _ __  (_)___  ",
+        "/ /_/ /_ // -_)  ' \\| '_ \\/ / __/  ",
+        "\\____//___\\__/_/_/_/ .__/_/\\___/   ",
+        "                   /_/             "
+    ]
+    colors = [
+        "\033[38;5;51m",  # Bright Cyan
+        "\033[38;5;45m",  # Blue-Cyan
+        "\033[38;5;99m",  # Purple-Blue
+        "\033[38;5;201m", # Magenta
+        "\033[38;5;207m"  # Pink
+    ]
+    print()
+    for line, color in zip(logo_lines, colors):
+        print(f" {color}{line}{RESET}")
+    print(f"  {CYAN}macOS Disk Cleaner{RESET} • {YELLOW}v1.0.0{RESET}")
+    print(f"  {BOLD}Let's keep your Mac healthy and lean!{RESET}")
+    print()
 
 
 def _calculate_total_size(results: list[dict]) -> str:
@@ -108,111 +183,125 @@ def _align_columns(results: list[dict]) -> list[tuple[str, str, str | None]]:
     return aligned
 
 
-def _format_header(title: str, color: str) -> tuple[str, int]:
-    """
-    Format a section header with colored title and box-drawing character.
-    Returns (formatted_header_str, header_width_for_separator).
-    """
-    # Create header: "━━━ TITLE ━━━..."
-    # The total width should be ~45 characters (approx project default)
-    title_text = f" {title} "
-    remaining = 45 - len(title_text) - 2  # 2 for leading "━━━"
-    left_dashes = 2
-    right_dashes = remaining - left_dashes
-
-    header = f"{color}{'━' * left_dashes}{BOLD}{title_text}{RESET}{color}{'━' * right_dashes}{RESET}"
-    return header, 45
+def _print_card(title: str, results: list[dict], total_label: str = None, total_val: str = None, is_review: bool = False) -> None:
+    """Print results in a beautifully styled terminal card with double/single line borders."""
+    width = 58
+    border_color = YELLOW if is_review else GREEN
+    
+    # Top border
+    print(f"{border_color}┌{'─' * (width - 2)}┐{RESET}")
+    
+    # Title line
+    title_icon = "⚠️" if is_review else "🟢"
+    title_text = f"  {title_icon}  {BOLD}{title}{RESET}"
+    title_len = _visible_len(title_text)
+    right_pad = width - 2 - title_len
+    print(f"{border_color}│{RESET}{title_text}{' ' * right_pad}{border_color}│{RESET}")
+    
+    # Separator
+    print(f"{border_color}├{'─' * (width - 2)}┤{RESET}")
+    
+    if not results:
+        empty_text = "  (nothing found)"
+        empty_len = _visible_len(empty_text)
+        right_pad = width - 2 - empty_len
+        print(f"{border_color}│{RESET}{empty_text}{' ' * right_pad}{border_color}│{RESET}")
+    else:
+        # Format items inside card
+        for result in results:
+            label = result.get("label", "")
+            size_str = result.get("size_str", "")
+            action = result.get("action")
+            
+            icon = get_icon(label.strip())
+            clean_label = label.strip()
+            
+            # Truncate clean_label if it's too long to fit
+            max_label_len = width - 2 - 4 - len(size_str) - 4
+            if _visible_len(clean_label) > max_label_len:
+                clean_label = clean_label[:max_label_len - 3] + "..."
+            
+            icon_str = f"  {icon} "
+            item_text = f"{icon_str}{clean_label}"
+            item_len = _visible_len(item_text)
+            
+            # Pad spaces to align size_str to the right
+            spaces_count = width - 2 - item_len - _visible_len(size_str) - 2
+            line_str = f"{item_text}{' ' * spaces_count}{size_str}  "
+            
+            print(f"{border_color}│{RESET}{line_str}{border_color}│{RESET}")
+            
+            # Handle multi-line commands or review actions
+            if action:
+                lines = action.split("\n")
+                for sub_line in lines:
+                    sub_text = f"     ↳ {sub_line}"
+                    sub_len = _visible_len(sub_text)
+                    right_pad_sub = width - 2 - sub_len
+                    print(f"{border_color}│{RESET}{YELLOW}{sub_text}{RESET}{' ' * right_pad_sub}{border_color}│{RESET}")
+                    
+    # Print total summary if provided
+    if total_label and total_val:
+        print(f"{border_color}├{'─' * (width - 2)}┤{RESET}")
+        total_text = f"  ✨ {total_label}: {BOLD}{GREEN}{total_val}{RESET}"
+        total_len = _visible_len(total_text)
+        right_pad_tot = width - 2 - total_len
+        print(f"{border_color}│{RESET}{total_text}{' ' * right_pad_tot}{border_color}│{RESET}")
+        
+    # Bottom border
+    print(f"{border_color}└{'─' * (width - 2)}┘{RESET}")
 
 
 def print_cleaned(results: list[dict]) -> None:
-    """
-    Print the CLEANED section with green header, green checkmarks, and total.
-    Format:
-      ━━━ CLEANED ━━━━━━━━━━━━━━━━━━━━━━━━━━
-        ✓ User caches          1.2 GB
-        ─────────────────────────────────────
-        Total freed: 1.8 GB
-    """
-    header, header_width = _format_header("CLEANED", GREEN)
+    """Print the CLEANED section in a card layout."""
     print()
-    print(header)
-
-    if not results:
-        print("  (nothing found)")
-        print()
-        return
-
-    aligned = _align_columns(results)
-    for label, size_str, _ in aligned:
-        print(f"  {GREEN}✓{RESET} {label}  {size_str}")
-
-    # Separator line
-    separator = "─" * (header_width - 2)  # -2 for padding
-    print(f"  {separator}")
-
-    # Total line
-    total_size = _calculate_total_size(results)
-    print(f"  Total freed: {total_size}")
+    total_freed = _calculate_total_size(results)
+    _print_card("CLEANED TARGETS", results, total_label="Total Freed", total_val=total_freed, is_review=False)
     print()
 
 
 def print_review(results: list[dict]) -> None:
-    """
-    Print the REVIEW section with yellow header and warning symbols.
-    Action field can be multi-line (e.g., iOS backup has device name + command).
-    Format:
-      ━━━ REVIEW ━━━━━━━━━━━━━━━━━━━━━━━━━━
-        ⚠ Trash                4.1 GB  →  run: rm -rf ~/.Trash/*
-        ⚠ iOS backup           12 GB   →  "Caio's iPhone" (2026-04-01)
-                                          run: ozempic --delete-backup <id>
-    """
-    header, _ = _format_header("REVIEW", YELLOW)
+    """Print the REVIEW section in a card layout."""
     print()
-    print(header)
-
-    if not results:
-        print("  (nothing found)")
-        print()
-        return
-
-    aligned = _align_columns(results)
-    for label, size_str, action in aligned:
-        first_line = f"  {YELLOW}⚠{RESET} {label}  {size_str}"
-        if action:
-            first_line += f"  →  {action.split(chr(10))[0] if chr(10) in action else action}"
-        print(first_line)
-
-        # Print remaining lines of multi-line actions
-        if action and "\n" in action:
-            lines = action.split("\n")
-            # Calculate indent: 2 spaces + 1 char symbol + 1 space + padded label + 2 spaces + size_str + "  →  "
-            # The first_line without color codes: "  ⚠ " + label + "  " + size_str + "  →  "
-            prefix_width = 2 + 1 + 1 + len(label) + 2 + len(size_str) + 5  # 5 for "  →  "
-            indent = " " * prefix_width
-            for line in lines[1:]:
-                print(f"{indent}{line}")
-
+    _print_card("ITEMS TO REVIEW", results, is_review=True)
     print()
 
 
 class Spinner:
-    """A simple threaded CLI spinner."""
+    """A thread-safe CLI spinner with progress messages and clean line updates."""
     def __init__(self, message: str = "Analyzing"):
         self.message = message
         self.frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
         self._stop_event = threading.Event()
         self._thread = None
+        self._lock = threading.Lock()
+
+    def update_message(self, new_message: str) -> None:
+        """Update the spinner message thread-safely."""
+        with self._lock:
+            self.message = new_message
 
     def _spin(self):
         idx = 0
+        last_len = 0
         while not self._stop_event.is_set():
             frame = self.frames[idx % len(self.frames)]
-            sys.stdout.write(f"\r  {CYAN}{frame}{RESET} {self.message}...")
+            with self._lock:
+                msg = self.message
+            
+            line = f"\r  {CYAN}{frame}{RESET} {msg}..."
+            visible_len = _visible_len(line)
+            
+            padding = max(0, last_len - visible_len)
+            sys.stdout.write(line + " " * padding)
             sys.stdout.flush()
+            
+            last_len = visible_len + padding
             idx += 1
             time.sleep(0.1)
-        # Clear the line on exit
-        sys.stdout.write("\r" + " " * (len(self.message) + 10) + "\r")
+            
+        # Clear the spinner line completely
+        sys.stdout.write("\r" + " " * last_len + "\r")
         sys.stdout.flush()
 
     def __enter__(self):

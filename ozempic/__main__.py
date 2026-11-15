@@ -22,13 +22,19 @@ def main() -> None:
     args = parser.parse_args()
 
     # 1. FDA Check
+    reporter.print_logo()
     if not cleaner.check_fda():
         reporter.print_fda_error()
         sys.exit(1)
 
     # 2. Analyze -> Prompt -> Clean
-    with reporter.Spinner("Analyzing safe-to-clean files"):
-        pending_cleaned = cleaner.clean_all(keep_logs=args.keep_logs, dry_run=True)
+    analyze_spinner = reporter.Spinner("Analyzing safe-to-clean files")
+    with analyze_spinner:
+        pending_cleaned = cleaner.clean_all(
+            keep_logs=args.keep_logs,
+            dry_run=True,
+            on_progress=analyze_spinner.update_message,
+        )
         review_items = cleaner.get_review_items()
 
     if not pending_cleaned and not review_items:
@@ -54,8 +60,13 @@ def main() -> None:
             sys.exit(0)
 
     # Perform actual cleaning
-    with reporter.Spinner("Cleaning"):
-        actual_cleaned = cleaner.clean_all(keep_logs=args.keep_logs, dry_run=False)
+    clean_spinner = reporter.Spinner("Cleaning system files")
+    with clean_spinner:
+        actual_cleaned = cleaner.clean_all(
+            keep_logs=args.keep_logs,
+            dry_run=False,
+            on_progress=clean_spinner.update_message,
+        )
     
     # Print final report
     if actual_cleaned:

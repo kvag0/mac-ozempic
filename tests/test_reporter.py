@@ -1,5 +1,5 @@
 import unittest
-from ozempic.reporter import _calculate_total_size
+from ozempic.reporter import _calculate_total_size, _visible_len
 
 
 class TestCalculateTotalSize(unittest.TestCase):
@@ -29,6 +29,23 @@ class TestCalculateTotalSize(unittest.TestCase):
 
     def test_empty(self):
         self.assertEqual(_calculate_total_size([]), "0 B")
+
+
+class TestVisibleLen(unittest.TestCase):
+    def test_standard_text(self):
+        self.assertEqual(_visible_len("hello"), 5)
+
+    def test_ansi_escape_sequences(self):
+        colored = "\033[92mhello\033[0m"
+        self.assertEqual(_visible_len(colored), 5)
+
+    def test_double_width_emojis(self):
+        # "📂" is double width (2 columns)
+        self.assertEqual(_visible_len("📂 caches"), 9)  # 2 for emoji, 7 for " caches"
+
+    def test_mixed(self):
+        # "\033[92m📂\033[0m" has visible length of 2
+        self.assertEqual(_visible_len("\033[92m📂\033[0m caches"), 9)
 
 
 if __name__ == "__main__":

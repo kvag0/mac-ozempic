@@ -5,6 +5,7 @@ No external dependencies — stdlib only.
 
 import os
 import plistlib
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -200,6 +201,70 @@ def _clean_electron_sub_caches(dry_run: bool = False) -> list[dict]:
     return results
 
 
+def _docker_reclaimable() -> dict[str, str] | None:
+    """
+    Return {resource type: reclaimable size string} from `docker system df`,
+    e.g. {"Images": "4.021GB", "Build Cache": "6.906GB"}.
+    Returns None if the docker CLI is missing or the daemon is not responding.
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "system", "df", "--format", "{{.Type}}\t{{.Reclaimable}}"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    reclaimable: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 2:
+            continue
+        # "4.021GB (42%)" -> "4.021 GB" (reporter.py expects "<num> <UNIT>")
+        raw = parts[1].split(" ")[0]
+        match = re.match(r"([\d.]+)([A-Za-z]+)", raw)
+        if not match:
+            continue
+        unit = match.group(2).upper()
+        reclaimable[parts[0]] = f"{match.group(1)} {unit}"
+    return reclaimable
+
+
+def _clean_docker(dry_run: bool = False) -> list[dict]:
+    """
+    Safe Docker prune: stopped containers, unused images, build cache.
+    Running containers and volumes are never touched (unused volumes are
+    offered as a review item instead — they may hold database data).
+    Sizes reported are docker's own "reclaimable" estimates, measured
+    before pruning.
+    """
+    reclaimable = _docker_reclaimable()
+    if reclaimable is None:
+        return []
+
+    targets = [
+        ("Docker stopped containers", "Containers", ["docker", "container", "prune", "-f"]),
+        ("Docker unused images", "Images", ["docker", "image", "prune", "-af"]),
+        ("Docker build cache", "Build Cache", ["docker", "builder", "prune", "-af"]),
+    ]
+
+    results: list[dict] = []
+    for label, df_type, cmd in targets:
+        size_str = reclaimable.get(df_type, "0 B")
+        if size_str.startswith("0 "):
+            continue
+        if not dry_run:
+            try:
+                subprocess.run(cmd, capture_output=True, timeout=300)
+            except (subprocess.TimeoutExpired, OSError):
+                continue
+        results.append({"label": label, "size_str": size_str, "action": None})
+    return results
+
+
 def _clean_mail_downloads(dry_run: bool = False) -> dict | None:
     """Find Mail Downloads directories and delete their contents (if not dry_run)."""
     base = Path("~/Library/Containers/com.apple.mail").expanduser()
@@ -262,7 +327,7 @@ def _run_font_cache() -> dict:
 # Public API
 # ---------------------------------------------------------------------------
 
-def clean_all(keep_logs: bool = False, dry_run: bool = False) -> list[dict]:
+def clean_all(keep_logs: bool = False, dry_run: bool = False, on_progress=None) -> list[dict]:
     """
     Run all auto-delete targets.  Returns a list of result dicts compatible
     with reporter.py (only non-None / non-zero results are included).
@@ -274,9 +339,13 @@ def clean_all(keep_logs: bool = False, dry_run: bool = False) -> list[dict]:
             results.append(item)
 
     # User caches (delete contents, keep folder)
+    if on_progress:
+        on_progress("User caches")
     _add(_clean_dir_contents("User caches", Path("~/Library/Caches"), dry_run))
 
     # System caches (may need sudo — skip on PermissionError)
+    if on_progress:
+        on_progress("System caches")
     sys_caches = Path("/Library/Caches")
     if sys_caches.exists():
         size = get_size(sys_caches)
@@ -292,6 +361,8 @@ def clean_all(keep_logs: bool = False, dry_run: bool = False) -> list[dict]:
 
     # Logs
     if not keep_logs:
+        if on_progress:
+            on_progress("User & System logs")
         _add(_clean_dir_contents("User logs", Path("~/Library/Logs"), dry_run))
         sys_logs = Path("/Library/Logs")
         if sys_logs.exists():
@@ -307,6 +378,8 @@ def clean_all(keep_logs: bool = False, dry_run: bool = False) -> list[dict]:
                     results.append({"label": "System logs", "size_str": format_size(size), "action": None})
 
     # Xcode derived data
+    if on_progress:
+        on_progress("Xcode derived data")
     _add(_clean_dir_contents(
         "Xcode derived data",
         Path("~/Library/Developer/Xcode/DerivedData"),
@@ -314,21 +387,38 @@ def clean_all(keep_logs: bool = False, dry_run: bool = False) -> list[dict]:
     ))
 
     # npm cache
+    if on_progress:
+        on_progress("npm cache")
     _add(_clean_path("npm cache", Path("~/.npm/_cacache"), dry_run))
 
     # pip cache
+    if on_progress:
+        on_progress("pip cache")
     _add(_clean_path("pip cache", Path("~/Library/Caches/pip"), dry_run))
 
     # Homebrew cache
+    if on_progress:
+        on_progress("Homebrew cache")
     _add(_clean_path("Homebrew cache", Path("~/Library/Caches/Homebrew"), dry_run))
 
+    # Docker (stopped containers, unused images, build cache)
+    if on_progress:
+        on_progress("Docker")
+    results.extend(_clean_docker(dry_run))
+
     # Electron sub-caches
+    if on_progress:
+        on_progress("Electron sub-caches")
     results.extend(_clean_electron_sub_caches(dry_run))
 
     # Mail Downloads
+    if on_progress:
+        on_progress("Mail Downloads")
     _add(_clean_mail_downloads(dry_run))
 
     # Commands (QL and Fonts) - Skip in dry run or report as "to be cleared"
+    if on_progress:
+        on_progress("QuickLook & Font caches")
     if not dry_run:
         # QuickLook cache
         try:
@@ -346,6 +436,8 @@ def clean_all(keep_logs: bool = False, dry_run: bool = False) -> list[dict]:
         results.append({"label": "Font cache", "size_str": "pending", "action": None})
 
     # .DS_Store files
+    if on_progress:
+        on_progress(".DS_Store files")
     _add(_clean_ds_store(dry_run))
 
     return results
@@ -367,6 +459,17 @@ def get_review_items() -> list[dict]:
                 "label": "Trash",
                 "size_str": format_size(size),
                 "action": "run: rm -rf ~/.Trash/*",
+            })
+
+    # Docker unused volumes — never auto-deleted: may hold database data
+    reclaimable = _docker_reclaimable()
+    if reclaimable:
+        vol_size = reclaimable.get("Local Volumes", "0 B")
+        if not vol_size.startswith("0 "):
+            results.append({
+                "label": "Docker unused volumes",
+                "size_str": vol_size,
+                "action": "run: docker volume prune",
             })
 
     return results
