@@ -231,3 +231,216 @@ def read_app_info(app: Path, roots: Roots) -> AppInfo:
         cask=cask,
         zap_paths=zap,
     )
+
+
+# ---------------------------------------------------------------------------
+# Leftover matching
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Candidate:
+    path: Path
+    group: str
+    reason: str
+    checked: bool
+    size: int
+
+
+@dataclass
+class OtherApps:
+    ids: set[str]
+    names: set[str]
+    paths: list[Path]
+
+
+# (relative path under Library, kind). Kind drives the extra rules:
+# "support" = exact-name eligible, "launchd", "group", "crash", "" = id rules only.
+_USER_LOCATIONS = (
+    ("Application Support", "support"),
+    ("Caches", "support"),
+    ("Preferences", ""),
+    ("Preferences/ByHost", ""),
+    ("Containers", ""),
+    ("Group Containers", "group"),
+    ("Saved Application State", ""),
+    ("Logs", "support"),
+    ("HTTPStorages", ""),
+    ("WebKit", ""),
+    ("Cookies", ""),
+    ("Application Scripts", ""),
+    ("LaunchAgents", "launchd"),
+    ("Logs/DiagnosticReports", "crash"),
+)
+_SYSTEM_LOCATIONS = (
+    ("Application Support", "support"),
+    ("Caches", "support"),
+    ("Preferences", ""),
+    ("LaunchAgents", "launchd"),
+    ("LaunchDaemons", "launchd"),
+    ("PrivilegedHelperTools", ""),
+    ("Logs", "support"),
+    ("Logs/DiagnosticReports", "crash"),
+)
+
+_GROUP_PREFIX = re.compile(r"^(?:group\.)?(?:([A-Z0-9]{10})\.)?(.+)$")
+
+
+def strip_group_prefix(name: str) -> tuple[str, str | None]:
+    """Strip a leading 'group.' and/or '<TEAMID>.' from a Group Container name."""
+    m = _GROUP_PREFIX.match(name)
+    return m.group(2), m.group(1)
+
+
+def other_apps(roots: Roots, exclude: Path) -> OtherApps:
+    """IDs and names of every installed app except *exclude*."""
+    ex = exclude.resolve()
+    ids: set[str] = set()
+    names: set[str] = set()
+    paths: list[Path] = []
+    for app in _iter_apps(roots):
+        if app.resolve() == ex:
+            continue
+        plist = _bundle_plist(app)
+        if not plist or not isinstance(plist.get("CFBundleIdentifier"), str):
+            continue
+        bid = plist["CFBundleIdentifier"]
+        ids.add(bid.lower())
+        ids.update(h.lower() for h in _helper_ids(app, bid))
+        names.update(_name_keys(app, plist))
+        paths.append(app)
+    return OtherApps(ids=ids, names=names, paths=paths)
+
+
+def _id_match(name: str, ident: str) -> bool:
+    return name == ident or name.startswith(ident + ".")
+
+
+def _longest_match(name: str, idents) -> str | None:
+    best = None
+    for ident in idents:
+        if _id_match(name, ident) and (best is None or len(ident) > len(best)):
+            best = ident
+    return best
+
+
+def _launchd_targets_app(plist_path: Path, app: Path) -> bool:
+    data = _read_plist(plist_path)
+    if not data:
+        return False
+    program = data.get("Program")
+    if not isinstance(program, str):
+        args = data.get("ProgramArguments")
+        program = args[0] if isinstance(args, list) and args and isinstance(args[0], str) else ""
+    return program.startswith(str(app) + "/")
+
+
+def find_candidates(info: AppInfo, others: OtherApps, roots: Roots) -> list[Candidate]:
+    """Every leftover of *info*, one Candidate per path, with its default check state."""
+    from ozempic.cleaner import get_size
+
+    bundle_id = info.bundle_id.lower()
+    helpers = [h.lower() for h in info.helper_ids]
+    target_ids = [bundle_id, *helpers]
+    vendor_prefix = ".".join(bundle_id.split(".")[:2])
+    keys = [k for k in info.names if len(k) >= 4]
+    partial_keys = keys + ([info.vendor] if info.vendor and len(info.vendor) >= 4 else [])
+    crash_keys = [*info.names, *target_ids]
+
+    locations = [(roots.home / "Library" / rel, f"~/Library/{rel}", kind)
+                 for rel, kind in _USER_LOCATIONS]
+    locations += [(roots.system_library / rel, f"/Library/{rel}", kind)
+                  for rel, kind in _SYSTEM_LOCATIONS]
+    location_roots = {loc for loc, _, _ in locations}
+    group_order = ["Application"] + [label for _, label, _ in locations] + ["Homebrew"]
+
+    found: dict[Path, Candidate] = {}
+
+    def add(path: Path, group: str, reason: str, checked: bool) -> None:
+        if path not in found:
+            found[path] = Candidate(path, group, reason, checked, get_size(path))
+
+    def group_of(path: Path) -> str:
+        for loc, label, _ in locations:
+            if path.parent == loc:
+                return label
+        parent = str(path.parent)
+        home = str(roots.home)
+        return "~" + parent[len(home):] if parent.startswith(home) else parent
+
+    team_shared: list[bool] = []  # lazy cache: codesign every other app only if needed
+
+    def shares_team() -> bool:
+        if not team_shared:
+            team_shared.append(any(_team_id(p) == info.team_id for p in others.paths))
+        return team_shared[0]
+
+    # 1. Seeds: the app, curated brew zap paths, the Caskroom entry.
+    add(info.path, "Application", "app", True)
+    for z in info.zap_paths:
+        if z not in location_roots:
+            add(z, group_of(z), "brew zap", True)
+    if info.cask:
+        cr = roots.caskroom / info.cask
+        if cr.exists():
+            add(cr, "Homebrew", "cask", True)
+
+    for loc, label, kind in locations:
+        try:
+            entries = sorted(loc.iterdir())
+        except OSError:
+            continue
+        for e in entries:
+            if e in found:
+                continue
+            n = e.name.lower()
+            team = None
+            r = n
+            if kind == "group":
+                rest, team = strip_group_prefix(e.name)
+                r = rest.lower()
+
+            # 2. Never Apple's.
+            if r.startswith("com.apple.") or n.startswith("com.apple."):
+                continue
+            # 3. Belongs to another installed app (its ID is a longer match).
+            own = _longest_match(r, target_ids)
+            other = _longest_match(r, others.ids)
+            if other and (own is None or len(other) > len(own)):
+                continue
+            # 4. Bundle ID / helper ID.
+            if own:
+                add(e, label, "bundle id" if own == bundle_id else "helper", True)
+                continue
+            # 5. launchd job pointing inside the app.
+            if kind == "launchd" and e.suffix == ".plist" and _launchd_targets_app(e, info.path):
+                add(e, label, "launchd", True)
+                continue
+            # 6. Exact app name.
+            if kind == "support":
+                stem = Path(n).stem
+                hit = next((k for k in info.names if k in (n, stem)), None)
+                if hit:
+                    ambiguous = len(hit) < 4 or hit in others.names
+                    add(e, label, "name (ambiguous)" if ambiguous else "name", not ambiguous)
+                    continue
+            # 7. Group Containers: Team ID, then vendor prefix.
+            if kind == "group":
+                if team and info.team_id and team == info.team_id:
+                    shared = shares_team()
+                    add(e, label, "team (shared)" if shared else "team", not shared)
+                    continue
+                if _id_match(r, vendor_prefix):
+                    add(e, label, "vendor (shared)", False)
+                    continue
+            # 8. Crash reports.
+            if kind == "crash" and any(
+                n.startswith(k) and len(n) > len(k) and n[len(k)] in "-_. " for k in crash_keys
+            ):
+                add(e, label, "crash report", True)
+                continue
+            # 9. Partial match.
+            if any(k in n for k in partial_keys):
+                add(e, label, "partial", False)
+
+    order = {g: i for i, g in enumerate(group_order)}
+    return sorted(found.values(), key=lambda c: (order.get(c.group, len(order)), str(c.path)))
