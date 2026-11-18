@@ -18,13 +18,22 @@ from ozempic.uninstaller import AppInfo
 # Bundle IDs and launchd labels that are safe to put inside a script string.
 _SAFE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
 
+# Paths arrive as argv (osascript drops the "--"), never inside the script text.
+# Each coercion has its own try so one vanished path doesn't abort the batch;
+# the long timeout covers Finder waiting on its admin password prompt.
 _TRASH_SCRIPT = [
     "on run argv",
     "set fs to {}",
     "repeat with p in argv",
+    "try",
     "set end of fs to (POSIX file (p as text)) as alias",
+    "end try",
     "end repeat",
+    "if fs is not {} then",
+    "with timeout of 600 seconds",
     'tell application "Finder" to delete fs',
+    "end timeout",
+    "end if",
     "end run",
 ]
 
@@ -46,7 +55,9 @@ def hosts_terminal(info: AppInfo) -> bool:
 
 
 def is_running(info: AppInfo) -> bool:
-    return _run(["pgrep", "-f", f"{info.path}/Contents/"]).returncode == 0
+    # Substring match in Python: pgrep -f would treat "Foo (Beta).app" as a regex.
+    needle = f"{info.path}/Contents/"
+    return any(needle in line for line in _run(["ps", "-axo", "command="]).stdout.splitlines())
 
 
 def quit_app(info: AppInfo, timeout: float = 10.0) -> bool:
@@ -66,7 +77,7 @@ def _label(plist: Path) -> str | None:
     try:
         with open(plist, "rb") as f:
             label = plistlib.load(f).get("Label")
-    except (OSError, plistlib.InvalidFileException, ValueError, AttributeError):
+    except Exception:  # OSError, InvalidFileException, ExpatError (truncated XML), ...
         return None
     return label if isinstance(label, str) and _SAFE_ID.match(label) else None
 
@@ -92,15 +103,34 @@ def unload_launchd(paths: list[Path]) -> None:
 
 def move_to_trash(paths: list[Path]) -> list[tuple[Path, str]]:
     """Move *paths* to the Trash via Finder (Put Back works). Returns the ones that failed."""
-    if not paths:
-        return []
+    failures: list[tuple[Path, str]] = []
+    # Finder resolves aliases, so a symlink would trash its target. Move the link itself.
+    links = [p for p in paths if p.is_symlink()]
+    for link in links:
+        try:
+            os.rename(link, _free_trash_name(link.name))
+        except OSError as e:
+            failures.append((link, str(e)))
+    files = [p for p in paths if p not in links]
+    if not files:
+        return failures
     args = ["osascript"]
     for line in _TRASH_SCRIPT:
         args += ["-e", line]
-    args += ["--", *map(str, paths)]
+    args += ["--", *map(str, files)]
     r = _run(args)
     reason = (r.stderr or "").strip() or "still present"
-    return [(p, reason) for p in paths if p.exists() or p.is_symlink()]
+    return failures + [(p, reason) for p in files if p.exists() or p.is_symlink()]
+
+
+def _free_trash_name(name: str) -> Path:
+    trash = Path.home() / ".Trash"
+    candidate = trash / name
+    n = 2
+    while candidate.exists() or candidate.is_symlink():
+        candidate = trash / f"{name} {n}"
+        n += 1
+    return candidate
 
 
 def flush_prefs() -> None:

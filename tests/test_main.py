@@ -104,8 +104,25 @@ class TestUninstallFlow(_FlowBase):
         self.trash.move_to_trash.assert_not_called()
         self.checklist.assert_not_called()
 
+    def test_running_check_happens_after_checklist(self):
+        self.trash.is_running.return_value = True
+        self.checklist.return_value = None
+        self.assertEqual(main(["uninstall", "Obsidian"]), 0)
+        self.input.assert_not_called()
+        self.trash.quit_app.assert_not_called()
+
+    def test_quit_before_unload_and_trash(self):
+        self.trash.is_running.return_value = True
+        self.input.return_value = "y"
+        self._selected(self.app, self.agent)
+        self.assertEqual(main(["uninstall", "Obsidian"]), 0)
+        order = [c[0] for c in self.trash.mock_calls
+                 if c[0] in ("quit_app", "unload_launchd", "move_to_trash")]
+        self.assertEqual(order, ["quit_app", "unload_launchd", "move_to_trash"])
+
     def test_quit_cancelled(self):
         self.trash.is_running.return_value = True
+        self._selected(self.app)
         self.input.return_value = "n"
         self.assertEqual(main(["uninstall", "Obsidian"]), 1)
         self.trash.quit_app.assert_not_called()
@@ -113,6 +130,7 @@ class TestUninstallFlow(_FlowBase):
 
     def test_quit_fails(self):
         self.trash.is_running.return_value = True
+        self._selected(self.app)
         self.trash.quit_app.return_value = False
         self.input.return_value = "y"
         self.assertEqual(main(["uninstall", "Obsidian"]), 1)

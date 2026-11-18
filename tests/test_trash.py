@@ -48,13 +48,14 @@ class TestTrash(unittest.TestCase):
         with patch.dict(os.environ, {"__CFBundleIdentifier": "com.foo.term.helper"}):
             self.assertTrue(trash.hosts_terminal(_info("com.foo.term", ["com.foo.term.helper"])))
 
-    def test_is_running_uses_pgrep_on_bundle(self):
-        with patch("ozempic.trash.subprocess.run", side_effect=_done(0)) as run:
-            self.assertTrue(trash.is_running(_info()))
-        self.assertEqual(run.call_args.args[0],
-                         ["pgrep", "-f", "/Applications/Obsidian.app/Contents/"])
-        with patch("ozempic.trash.subprocess.run", side_effect=_done(1)):
-            self.assertFalse(trash.is_running(_info()))
+    def test_is_running_matches_bundle_path_literally(self):
+        info = _info(path="/Applications/Foo (Beta).app")
+        ps = "/usr/sbin/cfprefsd agent\n/Applications/Foo (Beta).app/Contents/MacOS/Foo -psn\n"
+        with patch("ozempic.trash.subprocess.run", side_effect=_done(0, stdout=ps)):
+            self.assertTrue(trash.is_running(info))
+        with patch("ozempic.trash.subprocess.run",
+                   side_effect=_done(0, stdout="/Applications/Foo Beta.app/Contents/MacOS/Foo\n")):
+            self.assertFalse(trash.is_running(info))
 
     def test_quit_app_rejects_unsafe_bundle_id(self):
         with patch("ozempic.trash.subprocess.run", side_effect=_done(0)) as run:
@@ -143,6 +144,36 @@ class TestTrash(unittest.TestCase):
              patch("ozempic.trash.subprocess.run", side_effect=_done(0)) as run:
             trash.unload_launchd([bad, junk])
         run.assert_not_called()
+
+    def test_unload_truncated_xml_skipped(self):
+        p = self.tmp / "sys/LaunchDaemons/t.plist"
+        p.parent.mkdir(parents=True)
+        p.write_bytes(b'<?xml version="1.0"?><plist><dict><key>Label</key>')
+        with patch("ozempic.trash.Path.home", return_value=self.tmp / "home"), \
+             patch("ozempic.trash.subprocess.run", side_effect=_done(0)) as run:
+            trash.unload_launchd([p])
+        run.assert_not_called()
+
+    def test_symlink_moved_to_trash_not_its_target(self):
+        home = self.tmp / "home"
+        (home / ".Trash").mkdir(parents=True)
+        target = self.tmp / "dotfiles/real.plist"
+        target.parent.mkdir()
+        target.write_text("keep me")
+        (home / ".Trash/x.plist").write_text("older item with same name")
+        link = self.tmp / "LaunchAgents/x.plist"
+        link.parent.mkdir()
+        link.symlink_to(target)
+        with patch("ozempic.trash.Path.home", return_value=home), \
+             patch("ozempic.trash.subprocess.run", side_effect=_done(0)) as run:
+            failures = trash.move_to_trash([link])
+        self.assertEqual(failures, [])
+        run.assert_not_called()
+        self.assertFalse(link.is_symlink())
+        self.assertEqual(target.read_text(), "keep me")
+        moved = [p for p in (home / ".Trash").iterdir() if p.is_symlink()]
+        self.assertEqual(len(moved), 1)
+        self.assertEqual(moved[0].resolve(), target.resolve())
 
     def test_flush_prefs(self):
         with patch("ozempic.trash.subprocess.run", side_effect=_done(0)) as run:

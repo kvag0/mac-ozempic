@@ -72,16 +72,19 @@ Then it opens a checklist:
 ```
 
 Exact matches (bundle ID, helpers, launchd jobs pointing into the app, cask
-`zap` paths) start **checked**. Guesses (partial names, vendor-level or
-shared-Team-ID Group Containers, names shared with another installed app)
-start **unchecked**. Each row shows why it matched.
+`zap` paths named after the app) start **checked**. Guesses start
+**unchecked**: partial names, vendor-level or shared-Team-ID Group Containers,
+names or IDs shared with another installed app, and `zap` paths that look
+shared or live outside `~/Library` (shown as `brew zap (shared?)`, e.g.
+`~/.docker`). Each row shows why it matched.
 
 Safety:
 
 - Everything goes to the **Trash via Finder**, so Put Back works. Nothing is
   deleted permanently. If Finder fails, ozempic stops and says why.
 - Apple apps (`/System/Applications`, `com.apple.*`) are refused.
-- Files that belong to another installed app are never listed.
+- Files owned by another installed app are never checked by default.
+- Symlinks are moved to the Trash themselves; their targets are never touched.
 - A running app is quit first (you're asked). The app hosting your terminal is
   refused.
 - launchd jobs are unloaded before their plists go to the Trash; `cfprefsd` is

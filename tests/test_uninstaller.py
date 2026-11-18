@@ -34,6 +34,9 @@ def make_app(parent: Path, name: str, bundle_id: str, helpers: dict | None = Non
     return app
 
 
+TRUNCATED_XML = b'<?xml version="1.0"?><plist><dict><key>Label</key>'
+
+
 def make_roots(tmp: Path) -> Roots:
     roots = Roots(
         home=tmp / "home",
@@ -86,6 +89,26 @@ class TestFindApps(unittest.TestCase):
 
     def test_no_match_returns_empty(self):
         self.assertEqual(find_apps("nope", self.roots), [])
+
+    def test_relative_path_returns_absolute(self):
+        import os
+        cwd = os.getcwd()
+        os.chdir(self.apps)
+        try:
+            found = find_apps("Obsidian.app", self.roots)
+        finally:
+            os.chdir(cwd)
+        self.assertEqual(len(found), 1)
+        self.assertTrue(found[0].is_absolute())
+        self.assertEqual(found[0].resolve(), self.obsidian.resolve())
+
+    def test_truncated_info_plist_does_not_crash(self):
+        broken = self.apps / "Broken.app/Contents"
+        broken.mkdir(parents=True)
+        (broken / "Info.plist").write_bytes(TRUNCATED_XML)
+        self.assertEqual(find_apps("obsidian", self.roots), [self.obsidian])
+        others = other_apps(self.roots, exclude=self.obsidian)
+        self.assertEqual(others.paths, [])
 
 
 class TestReadAppInfo(unittest.TestCase):
@@ -341,6 +364,56 @@ class TestFindCandidates(unittest.TestCase):
         matches = [c for c in self.results(info) if c.path == p]
         self.assertEqual(len(matches), 1)
         self.assertEqual((matches[0].reason, matches[0].checked), ("brew zap", True))
+
+    def test_zap_shared_with_installed_app_unchecked(self):
+        app = make_app(self.apps, "FooApp", "com.foo.app")
+        pro = self.user("Preferences/com.foo.app.pro.plist", is_dir=False)
+        info = self._info(app, "com.foo.app", [], ["fooapp"], zap=[pro])
+        others = OtherApps(ids={"com.foo.app.pro"}, names=set(), paths=[])
+        self.assertEqual(self.state(pro, info, others), ("brew zap (shared?)", False))
+
+    def test_zap_vendor_and_foreign_group_containers_unchecked(self):
+        app = make_app(self.apps, "WhatsApp", "net.whatsapp.WhatsApp")
+        fam = self.user("Group Containers/group.net.whatsapp.family")
+        fb = self.user("Group Containers/group.com.facebook.family")
+        smb = self.user("Group Containers/group.net.whatsapp.WhatsAppSMB.shared")
+        own = self.user("Group Containers/group.net.whatsapp.WhatsApp.shared")
+        script = self.user("Application Scripts/group.net.whatsapp.WhatsApp.shared")
+        info = self._info(app, "net.whatsapp.WhatsApp", [], ["whatsapp"], team="57T9237FN3",
+                          zap=[fam, fb, smb, own, script])
+        for p in (fam, fb, smb):
+            self.assertEqual(self.state(p, info), ("brew zap (shared?)", False), p.name)
+        self.assertEqual(self.state(own, info), ("brew zap", True))
+        self.assertEqual(self.state(script, info), ("brew zap", True))
+
+    def test_zap_outside_library_unchecked(self):
+        dot = self.roots.home / ".docker"
+        dot.mkdir()
+        info = self._info(self.app, "md.obsidian", [], ["obsidian"], zap=[dot])
+        self.assertEqual(self.state(dot, info), ("brew zap (shared?)", False))
+
+    def test_zap_home_or_location_ancestor_skipped(self):
+        lib = self.roots.home / "Library"
+        lib.mkdir(exist_ok=True)
+        info = self._info(self.app, "md.obsidian", [], ["obsidian"], zap=[self.roots.home, lib])
+        self.assertIsNone(self.state(self.roots.home, info))
+        self.assertIsNone(self.state(lib, info))
+
+    def test_zap_nested_own_id_checked(self):
+        sfl = self.user("Application Support/com.apple.sharedfilelist/x/md.obsidian.sfl2", is_dir=False)
+        info = self._info(self.app, "md.obsidian", [], ["obsidian"], zap=[sfl])
+        self.assertEqual(self.state(sfl, info), ("brew zap", True))
+
+    def test_shared_helper_id_unchecked(self):
+        info = self._info(self.app, "md.obsidian", ["org.sparkle-project.Downloader"], ["obsidian"])
+        others = OtherApps(ids={"org.sparkle-project.downloader"}, names=set(), paths=[])
+        p = self.user("Containers/org.sparkle-project.Downloader")
+        self.assertEqual(self.state(p, info, others), ("helper (shared)", False))
+
+    def test_truncated_launchd_plist_skipped(self):
+        p = self.user("LaunchAgents/t.t.plist", is_dir=False)
+        p.write_bytes(TRUNCATED_XML)
+        self.assertIsNone(self.state(p))
 
     def test_zap_equal_to_location_root_skipped(self):
         root = self.user("Caches")

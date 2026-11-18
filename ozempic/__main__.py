@@ -121,16 +121,17 @@ def run_uninstall(query: str, dry_run: bool, roots: uninstaller.Roots | None = N
     if not trash.finder_available():
         return _fail("ozempic can't control Finder. Allow it in System Settings → "
                      "Privacy & Security → Automation → your terminal → Finder.")
+    selected = run_checklist(info, items)
+    if not selected:
+        print("\n  Nothing removed.\n")
+        return 0
+
+    # Quit only after the user confirmed, so cancelling never closes the app.
     if trash.is_running(info):
         if _ask(f"  {app.stem} is running. Quit it? (y/N): ").lower() != "y":
             return _fail("Uninstall cancelled; the app is still running.")
         if not trash.quit_app(info):
             return _fail(f"{app.stem} did not quit. Close it and try again.")
-
-    selected = run_checklist(info, items)
-    if not selected:
-        print("\n  Nothing removed.\n")
-        return 0
 
     paths = [c.path for c in selected]
     agents = [p for p in paths if p.parent.name in ("LaunchAgents", "LaunchDaemons")]

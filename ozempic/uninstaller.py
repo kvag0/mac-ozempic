@@ -63,7 +63,7 @@ def _read_plist(path: Path) -> dict | None:
         with open(path, "rb") as f:
             data = plistlib.load(f)
         return data if isinstance(data, dict) else None
-    except (OSError, plistlib.InvalidFileException, ValueError):
+    except Exception:  # OSError, InvalidFileException, ExpatError (truncated XML), ...
         return None
 
 
@@ -86,7 +86,7 @@ def find_apps(query: str, roots: Roots) -> list[Path]:
     """Find installed apps matching a name, a bundle ID, or a .app path."""
     p = Path(query).expanduser()
     if p.suffix == ".app" and p.is_dir():
-        return [p]
+        return [p.absolute()]
     q = query.lower()
     found = []
     for app in _iter_apps(roots):
@@ -374,11 +374,27 @@ def find_candidates(info: AppInfo, others: OtherApps, roots: Roots) -> list[Cand
             team_shared.append(any(_team_id(p) == info.team_id for p in others.paths))
         return team_shared[0]
 
+    def exact_name(n: str) -> bool:
+        return any(k in (n, Path(n).stem) for k in keys if k not in others.names)
+
+    def zap_checked(z: Path) -> bool:
+        """A curated zap path starts checked only if it is clearly this app's own."""
+        if not any(z.is_relative_to(loc) for loc in location_roots):
+            return False  # outside ~/Library and /Library, e.g. ~/.docker shared with the CLI
+        r = strip_group_prefix(z.name)[0].lower()
+        own = _longest_match(r, target_ids)
+        other = _longest_match(r, others.ids)
+        if other and (own is None or len(other) >= len(own)):
+            return False
+        return bool(own) or exact_name(r)
+
     # 1. Seeds: the app, curated brew zap paths, the Caskroom entry.
     add(info.path, "Application", "app", True)
     for z in info.zap_paths:
-        if z not in location_roots:
-            add(z, group_of(z), "brew zap", True)
+        if z == roots.home or any(loc.is_relative_to(z) for loc in location_roots):
+            continue
+        ok = zap_checked(z)
+        add(z, group_of(z), "brew zap" if ok else "brew zap (shared?)", ok)
     if info.cask:
         cr = roots.caskroom / info.cask
         if cr.exists():
@@ -407,9 +423,11 @@ def find_candidates(info: AppInfo, others: OtherApps, roots: Roots) -> list[Cand
             other = _longest_match(r, others.ids)
             if other and (own is None or len(other) > len(own)):
                 continue
-            # 4. Bundle ID / helper ID.
+            # 4. Bundle ID / helper ID (unchecked if another installed app owns the same ID).
             if own:
-                add(e, label, "bundle id" if own == bundle_id else "helper", True)
+                reason = "bundle id" if own == bundle_id else "helper"
+                shared = other is not None and len(other) == len(own)
+                add(e, label, f"{reason} (shared)" if shared else reason, not shared)
                 continue
             # 5. launchd job pointing inside the app.
             if kind == "launchd" and e.suffix == ".plist" and _launchd_targets_app(e, info.path):
