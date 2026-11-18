@@ -1,6 +1,7 @@
 # mac-ozempic
 
-macOS CLI disk cleaner. Auto-deletes known-safe caches and surfaces suspicious files.
+macOS CLI housekeeper. Cleans known-safe caches, and uninstalls apps together
+with everything they left around the system.
 
 ## Install
 
@@ -8,76 +9,102 @@ macOS CLI disk cleaner. Auto-deletes known-safe caches and surfaces suspicious f
 pip install -e .
 ```
 
+Requires Python 3.10+ and **Full Disk Access** for your terminal:
+`System Settings → Privacy & Security → Full Disk Access`.
+
 ## Usage
 
 ```bash
-ozempic              # full run: clean + scan + report
-ozempic --scan       # scan only, no deletion
-ozempic --clean      # clean only, skip anomaly scan
-ozempic --keep-logs  # exclude logs from auto-clean
-ozempic --delete-backup <id>  # delete iOS backup by UUID prefix
+ozempic                            # same as `ozempic clean`
+ozempic clean [--keep-logs] [-y]   # show what can be cleaned, confirm, clean
+ozempic uninstall <App>            # find an app's leftovers, pick, move to Trash
+ozempic uninstall <App> --dry-run  # list what would be removed, touch nothing
 ```
 
-Requires **Full Disk Access** for the terminal. Enable in:  
-`System Settings → Privacy & Security → Full Disk Access`
+`<App>` is an app name (`Obsidian`, case-insensitive), a bundle ID
+(`md.obsidian`), or a path to the `.app`.
 
-## What it cleans (auto)
+## clean
+
+Analyzes first (dry run), shows the result, asks before deleting. `-y` skips
+the prompt.
 
 | Target | Path |
 |--------|------|
 | User caches | `~/Library/Caches/` |
 | System caches | `/Library/Caches/` |
-| User logs | `~/Library/Logs/` |
-| System logs | `/Library/Logs/` |
+| User logs | `~/Library/Logs/` (skipped with `--keep-logs`) |
+| System logs | `/Library/Logs/` (skipped with `--keep-logs`) |
 | Xcode derived data | `~/Library/Developer/Xcode/DerivedData/` |
 | npm cache | `~/.npm/_cacache/` |
 | pip cache | `~/Library/Caches/pip/` |
 | Homebrew cache | `~/Library/Caches/Homebrew/` |
-| Electron sub-caches | `GPUCache`, `Code Cache`, `CachedData` in App Support |
+| Docker | stopped containers, unused images, build cache (`docker ... prune`) |
+| Electron sub-caches | `GPUCache`, `Code Cache`, `CachedData` in Application Support |
 | Mail Downloads | `~/Library/Containers/com.apple.mail/.../Mail Downloads/` |
 | QuickLook cache | via `qlmanage -r` |
 | Font cache | via `atsutil databases -removeUser` |
 | `.DS_Store` files | recursive in `~` |
 
-## What it flags (review)
+Shown for review, never deleted automatically: the Trash, and unused Docker
+volumes (they may hold database data).
 
-- **Trash** — shown with size, command to empty
-- **iOS backups** — shown with device name, date, and delete command
+## uninstall
 
-## What it flags (suspicious)
+Works like AppCleaner. It reads the app before removing anything and searches
+by bundle ID, embedded helper IDs, app name, vendor name and Team ID:
 
-**Location anomalies:**
-- Executables in `~/Downloads/`
-- Script files (`.sh`, `.py`, `.rb`, etc.) outside known tool paths
-- Unexpected hidden files/dirs in `~` root
-- Files >500MB in Downloads/Desktop not modified in 30+ days
+- `~/Library`: Application Support, Caches, Preferences (+ ByHost),
+  Containers, Group Containers, Saved Application State, Logs, HTTPStorages,
+  WebKit, Cookies, Application Scripts, LaunchAgents, DiagnosticReports
+- `/Library`: Application Support, Caches, Preferences, LaunchAgents,
+  LaunchDaemons, PrivilegedHelperTools, Logs, DiagnosticReports
+- **Homebrew casks**: the cask's curated `zap` leftover list is added, and the
+  `Caskroom` entry is removed too so `brew` stops tracking the app.
 
-**Extension mismatches:**
-- Image/doc files with executable bit set
-- Extensionless executable files
-- Files whose actual type (via `file`) doesn't match their extension
+Then it opens a checklist:
 
-## What it never touches
+```
+ ▸ ~/Library/Application Support
+   [x] obsidian                                 35 MB  brew zap
+   [ ] BraveSoftware                           252 MB  partial
+ ↑↓/jk move · space toggle · a all · n none · enter review · q quit
+```
+
+Exact matches (bundle ID, helpers, launchd jobs pointing into the app, cask
+`zap` paths) start **checked**. Guesses (partial names, vendor-level or
+shared-Team-ID Group Containers, names shared with another installed app)
+start **unchecked**. Each row shows why it matched.
+
+Safety:
+
+- Everything goes to the **Trash via Finder**, so Put Back works. Nothing is
+  deleted permanently. If Finder fails, ozempic stops and says why.
+- Apple apps (`/System/Applications`, `com.apple.*`) are refused.
+- Files that belong to another installed app are never listed.
+- A running app is quit first (you're asked). The app hosting your terminal is
+  refused.
+- launchd jobs are unloaded before their plists go to the Trash; `cfprefsd` is
+  restarted so deleted preferences aren't written back.
+
+First run triggers a macOS **Automation** prompt (your terminal → Finder).
+Allow it, or enable it later in
+`System Settings → Privacy & Security → Automation`. Removing files under
+`/Library` asks for your admin password.
+
+## History
+
+Every `clean` and `uninstall` run appends one JSON line to
+`~/Library/Application Support/ozempic/history.log` (not `~/Library/Logs`,
+which `clean` empties).
+
+```bash
+tail -n 5 ~/Library/Application\ Support/ozempic/history.log
+```
+
+## Never touched
 
 - `~/Library/Application Support/` root
 - `com.apple.bird` / CloudKit sync paths
 - `.lproj` language files (breaks Gatekeeper signatures)
 - `/var/folders/` root
-
-## Output
-
-```
-━━━ CLEANED ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  ✓ User caches          1.2 GB
-  ✓ Electron sub-caches  340 MB
-  Total freed: 1.5 GB
-
-━━━ REVIEW ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  ⚠ Trash                4.1 GB  →  run: rm -rf ~/.Trash/*
-  ⚠ iOS backup           12 GB   →  "Caio's iPhone" (2026-04-01)
-                                     run: ozempic --delete-backup abc12345
-
-━━━ SUSPICIOUS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  ✗ ~/Downloads/setup.sh  executable script in Downloads
-  ✗ ~/Desktop/photo.jpg   has executable bit set
-```
