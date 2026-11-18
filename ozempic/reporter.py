@@ -334,3 +334,39 @@ def print_fda_error() -> None:
     print()
     print(f"  Then try running {RED}ozempic{RESET} again.")
     print()
+
+
+def print_candidates(info, items) -> None:
+    """Dry-run listing of what `ozempic uninstall` found, grouped by location."""
+    from ozempic.cleaner import format_size
+
+    checked = [c for c in items if c.checked]
+    print()
+    print(f"  {BOLD}{info.path.stem}{RESET} ({info.bundle_id}) · {len(items)} items · "
+          f"{GREEN}{format_size(sum(c.size for c in checked))}{RESET} checked")
+    last = None
+    for c in items:
+        if c.group != last:
+            print(f"\n  {CYAN}▸ {c.group}{RESET}")
+            last = c.group
+        label = str(c.path) if c.group in ("Application", "Homebrew") else c.path.name
+        mark = f"{GREEN}[x]{RESET}" if c.checked else "[ ]"
+        print(f"    {mark} {label:<48} {format_size(c.size):>8}  {YELLOW}{c.reason}{RESET}")
+    print(f"\n  Dry run: nothing was moved. {len(checked)} of {len(items)} items would go to the Trash.\n")
+
+
+def print_uninstalled(removed, failed) -> None:
+    """Result cards after `ozempic uninstall` moved items to the Trash."""
+    from ozempic.cleaner import format_size
+
+    print()
+    results = [{"label": c.path.name, "size_str": format_size(c.size), "action": None}
+               for c in removed]
+    _print_card("UNINSTALLED", results, total_label="Moved to Trash",
+                total_val=format_size(sum(c.size for c in removed)))
+    if failed:
+        print()
+        _print_card("NOT REMOVED",
+                    [{"label": p.name, "size_str": "", "action": reason} for p, reason in failed],
+                    is_review=True)
+    print()
